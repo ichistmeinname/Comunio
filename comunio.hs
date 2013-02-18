@@ -3,16 +3,18 @@ import Network.HTTP
 import Text.XML.HXT.Core
 import Text.XML.HXT.XPath.Arrows
 import Data.List (delete)
+import Data.String.Unicode
 
 import Debug.Trace (trace)
 import qualified Debug.Trace as D
 
 ---------- global read/wrote configs ----------
 writeOptions :: [SysConfig]
-writeOptions = [withIndent yes, withOutputEncoding utf8]
+writeOptions = [withIndent yes, withOutputHTML,
+                withAddDefaultDTD yes, withOutputEncoding utf8]
 
 readOptions :: [SysConfig]
-readOptions =  [withInputEncoding utf8, withParseHTML yes, withWarnings no]
+readOptions =  [withParseHTML yes, withInputEncoding utf8, withWarnings no]
 
 --------- shortcut selectors for testing ----------
 readSrc :: String -> IOXmlTree
@@ -22,8 +24,8 @@ readSrc filePath =
 old :: IOXmlTree
 old = readSrc "old.html"
 
-curr :: IOXmlTree
-curr = readSrc "test.html"
+src :: String -> IOXmlTree
+src str = readSrc (str ++ ".html")
 
 --------------------------
 ---------- URLs ----------
@@ -50,6 +52,7 @@ type XmlTreeValue a = a XmlTree String
 type ParsedXmlTree a = a XmlTree XmlTree
 type IOXmlTree = IOSArrow XmlTree XmlTree
 type HtmlBody = String
+type FileName = (String, String) -- (Name,Optional) f.e. ("gameday","24")
 
 -- selects and reconstructs table-structure of lineup for further processing
 -- <players><player>...</player>...<player>...</player></players>
@@ -79,13 +82,16 @@ extractLineUp = processChildren (processLineup `when` isElem)
 parseHtml :: HtmlBody -> IOStateArrow s b XmlTree
 parseHtml htmlString = readString readOptions htmlString
 
+makeHtmlFile :: FileName -> FilePath
+makeHtmlFile (name,optional) = name++optional++".html"
+
 -- saves a given XmlTree to destionation file with utf-encoding
 -- in XML representation (<xml> ... </xml>)
-saveHtml :: FilePath -> IOXmlTree
-saveHtml dst = writeDocument [withOutputEncoding utf8, withIndent yes] dst
+saveHtml :: FileName -> IOXmlTree
+saveHtml dst = writeDocument writeOptions (makeHtmlFile dst)
 
-processHtml :: HtmlBody -> FilePath -> IO ()
-processHtml htmlString dst =
+processHtml :: FileName -> HtmlBody -> IO ()
+processHtml dst htmlString =
   runX (
     parseHtml htmlString >>> extractLineUp >>> saveHtml dst)
   >> return ()
@@ -100,7 +106,7 @@ lineUpContent userConfig = do
   return (rspBody rsp)
 
 -- all the above is triggered by this function
-downloadHtml :: UserConfig -> FilePath -> IO ()
+downloadHtml :: UserConfig -> FileName -> IO ()
 downloadHtml userConfig dst = lineUpContent userConfig >>= processHtml dst
 
 --------------------------------------
@@ -169,6 +175,18 @@ getPointsForPlayer src1 src2 pName = do
   [oldPoints] <- runX (src2 >>> pointsForPlayer pName)
   return (read currPoints :: Points, read oldPoints :: Points)
 
+calcDiff :: Points -> Points -> Points
+calcDiff p1 p2 = p1 - p2
+
+makeDiffHtml :: [(Int, String)] -> IOSArrow a XmlTree
+makeDiffHtml pointsAndNames = root [] [mkelem "players" []
+  (map (\(p,n) -> selem "player" [ selem "name"
+       [txt ( (unicodeToLatin1 $ fst $ utf8ToUnicode n))]
+                                 , selem "diffPoints" [txt (show p)]])
+   pointsAndNames)]
+    >>> writeDocument writeOptions "diff-example.html"
+ where decode = unicodeToLatin1 . fst . utf8ToUnicode
+
 computeDiff :: IOXmlTree -> IOXmlTree -> IO ()
 computeDiff newSrc oldSrc = do
   pNames <- runX (newSrc >>> playerNames)
@@ -177,13 +195,3 @@ computeDiff newSrc oldSrc = do
   diffList <- mapM (return . uncurry calcDiff) pList
   runX (makeDiffHtml (zip diffList pNames))
   return ()
-
-calcDiff :: Points -> Points -> Points
-calcDiff p1 p2 = p2 - p1
-
-makeDiffHtml :: [(Int, String)] -> IOSArrow a XmlTree
-makeDiffHtml pointsAndNames = root [] [mkelem "players" []
-  (map (\(p,n) -> selem "player" [ selem "name" [txt n]
-                                 , selem "diffPoints" [txt (show p)]])
-   pointsAndNames)]
-    >>> writeDocument writeOptions "diff-example.html"
